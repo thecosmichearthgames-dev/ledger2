@@ -96,7 +96,7 @@ export async function GET(request) {
     // Sort by lifetime_points (all-time Guild Marks earned), take top 50
     const topAccounts = [...accounts]
       .sort((a, b) => (b.lifetime_points || 0) - (a.lifetime_points || 0))
-      .slice(0, 50);
+      .slice(0, 1000);
 
     const enriched = await Promise.all(
       topAccounts.map(async (acc) => {
