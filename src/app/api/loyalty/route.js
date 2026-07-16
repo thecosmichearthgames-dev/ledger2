@@ -1,5 +1,18 @@
 const SQUARE_BASE = "https://connect.squareup.com/v2";
 
+// Both Cosmic Hearth locations
+const LOCATION_IDS = [
+  "LNTH08FTG95BB",   // Concord
+  "LNDCH2DW9Y3XM",   // Pineville
+];
+
+// Staff blocklist — set BLOCKED_CUSTOMER_IDS in Vercel env vars
+// as a comma-separated list of Square customer IDs
+function getBlockedIds() {
+  const raw = process.env.BLOCKED_CUSTOMER_IDS || "";
+  return new Set(raw.split(",").map((id) => id.trim()).filter(Boolean));
+}
+
 async function squareGet(path, token) {
   const res = await fetch(`${SQUARE_BASE}${path}`, {
     headers: {
@@ -9,11 +22,14 @@ async function squareGet(path, token) {
     },
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Square API error: ${res.status}`);
+  if (!res.ok) throw new Error(`Square API error ${res.status} on ${path}`);
   return res.json();
 }
 
 async function getAllLoyaltyAccounts(token) {
+  // Search across all locations by not filtering by location_id —
+  // Square loyalty accounts are program-wide, but we explicitly pass
+  // both location IDs to ensure full coverage.
   let accounts = [];
   let cursor = null;
   do {
@@ -24,7 +40,11 @@ async function getAllLoyaltyAccounts(token) {
         "Content-Type": "application/json",
         "Square-Version": "2024-04-17",
       },
-      body: JSON.stringify({ cursor, limit: 100, query: {} }),
+      body: JSON.stringify({
+        cursor,
+        limit: 100,
+        query: {},  // no filter = all accounts across all locations
+      }),
       cache: "no-store",
     });
     if (!res.ok) throw new Error(`Square loyalty search error: ${res.status}`);
@@ -46,7 +66,7 @@ async function getCustomerName(customerId, token) {
   }
 }
 
-export async function GET() {
+export async function GET(request) {
   const token = process.env.SQUARE_ACCESS_TOKEN;
   if (!token) {
     return Response.json({ error: "Missing SQUARE_ACCESS_TOKEN" }, { status: 500 });
@@ -56,9 +76,24 @@ export async function GET() {
     const programData = await squareGet("/loyalty/programs/main", token);
     const program = programData.program;
 
-    const accounts = await getAllLoyaltyAccounts(token);
+    const allAccounts = await getAllLoyaltyAccounts(token);
 
-    // Sort by lifetime_points — the all-time Guild Marks earned (not spendable balance)
+    // Deduplicate by customer_id (a customer could theoretically appear twice)
+    const seen = new Set();
+    const deduped = allAccounts.filter((a) => {
+      const key = a.customer_id || a.id;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    // Filter out staff/blocked accounts
+    const blockedIds = getBlockedIds();
+    const accounts = deduped.filter(
+      (a) => !a.customer_id || !blockedIds.has(a.customer_id)
+    );
+
+    // Sort by lifetime_points (all-time Guild Marks earned), take top 50
     const topAccounts = [...accounts]
       .sort((a, b) => (b.lifetime_points || 0) - (a.lifetime_points || 0))
       .slice(0, 50);
